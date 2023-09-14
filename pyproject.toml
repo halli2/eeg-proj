@@ -28,9 +28,13 @@ dependencies = [
   "mne[hdf5]~=1.5.1",
   "mne-bids~=0.13",
   "openneuro-py",
-  "polars~=0.19.2",
+  # "polars~=0.19.2",
+  "pandas~=2.1.0",
   "ipykernel~=6.25.2",
   "jupyter~=1.0.0",
+  "jupyter-dash~=0.4.2",
+  "numpy~=1.25.2",
+  "plotly~=5.16.1",
 ]
 
 [project.urls]
