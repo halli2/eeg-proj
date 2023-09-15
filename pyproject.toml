@@ -35,6 +35,7 @@ dependencies = [
   "jupyter-dash~=0.4.2",
   "numpy~=1.25.2",
   "plotly~=5.16.1",
+  "ipympl~=0.9.3",
 ]
 
 [project.urls]
