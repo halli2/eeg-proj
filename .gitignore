@@ -1,4 +1,6 @@
 ds004584/
+log/
+model.keras
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
