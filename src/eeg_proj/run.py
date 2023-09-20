@@ -20,9 +20,20 @@ ELECTRODES = [
     "F4",
 ]
 
+PD = 0
+CONTROL = 1
+FS = 500
 
-def run() -> None:
-    data_dir = "/home/halli/Documents/ELE670/eeg-proj/ds004584"
+
+class Patient:
+    def __init__(self):
+        self.group = True
+        self.moca = False
+        self.raw = 1
+
+
+def run(data_dir: str) -> None:
+    # data_dir = "/home/halli/Documents/ELE670/eeg-proj/ds004584"
     raw_paths: list[BIDSPath] = find_matching_paths(
         data_dir,
         extensions=[".set"],
