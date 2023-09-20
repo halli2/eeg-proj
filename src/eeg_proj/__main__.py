@@ -5,18 +5,12 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import mne
 import numpy as np
-import numpy.typing as npt
 import pandas as pd
-import seaborn as sns
 from mne_bids import (
     BIDSPath,
     find_matching_paths,
     read_raw_bids,
 )
-from scipy import signal
-
-# from EEGModels import EEGNet
-# from run import run
 
 ELECTRODES = [
     "P8",
@@ -66,8 +60,6 @@ class Patient:
         )
         self.raw: mne.io.Raw = process_raw(raw, info)
         self.psd: mne.time_frequency.Spectrum = self.raw.compute_psd(fmin=fmin, fmax=fmax, method="welch")
-        # print(self.raw.describe())
-        # sys.exit()
 
 
 Patients = list[Patient]
@@ -90,46 +82,54 @@ def load_data(data_dir: str) -> list[Patient]:
     df["BIDSPath"] = raw_paths
     df["CHPATH"] = chs
 
-    # df = df.loc[[0, 20, 110]]  # TODO: Remove
+    # df = df.loc[[0, 20, 110, 111, 112]]  # TODO: Remove
     patients = [Patient(row) for _, row in df.iterrows()]
     return patients
 
 
-def calculate_psd_metrics(patients: Patients):
-    pass
-
-
-def get_psds(patients: Patients, fmin=0, fmax=120, method="welch") -> pd.DataFrame | list[mne.time_frequency.Spectrum]:
-    psds = [p.raw.compute_psd(fmin=fmin, fmax=fmax, method=method) for p in patients]
+def calculate_psd_metrics(patients: Patients) -> pd.DataFrame:
+    """Calculates  average and std based on groups"""
     df = pd.DataFrame()
-    for ch in psds[0].ch_names:
-        all_channels = np.array([psd.get_data([ch]) for psd in psds])
-        all_channels = 10 * np.log10(all_channels)
-        avg = np.average(all_channels, axis=0)[0]
-        std = np.std(all_channels, axis=0)[0]
-        std_min = avg - std
-        std_max = avg + std
-        df[ch] = {"avg": avg, "min": std_min, "max": std_max}
-    print(df.head())
-    return df, psds
+    df["freqs"] = patients[0].psd.freqs
+    for channel in ELECTRODES:
+        control = []
+        pd_group = []
+        for patient in patients:
+            # TODO: Check diff between these?
+            if patient.group == "PD":
+                # if patient.moca == "COGNITIVE IMPAIRED":
+                pd_group.append(patient.psd.get_data([channel]))
+            else:
+                control.append(patient.psd.get_data([channel]))
+        control = np.array(control)
+        pd_group = np.array(pd_group)
+        control = 10 * np.log10(control)
+        pd_group = 10 * np.log10(pd_group)
+        df[f"{channel}_control_avg"] = np.average(control, axis=0)[0]
+        df[f"{channel}_control_std"] = np.std(control, axis=0)[0]
+        df[f"{channel}_pd_avg"] = np.average(pd_group, axis=0)[0]
+        df[f"{channel}_pd_std"] = np.std(pd_group, axis=0)[0]
+    return df
 
 
-def plot_psd(data: npt.NDArray, ax: Optional[plt.Axes] = None) -> None:
-    f, power = signal.welch(
-        data,
-        FS,
-        "flattop",  # hann?
-        scaling="density",
-    )
-    power_db = 10 * np.log10(power)
-
+def plot_psd_metrics(metrics: pd.DataFrame, channel: str, ax: Optional[plt.Axes] = None) -> None:
     if ax is None:
         _, ax = plt.subplots()
-    ax.set_xlim(1, 60)
-    ax.set_ylim(-190, -100)
-    ax.plot(f, power_db)
+    freqs = metrics["freqs"]
+    avg = metrics[f"{channel}_control_avg"]
+    std = metrics[f"{channel}_control_std"]
+    pd_avg = metrics[f"{channel}_pd_avg"]
+    pd_std = metrics[f"{channel}_pd_std"]
+
+    ax.plot(freqs, avg, label="control")
+    ax.plot(freqs, pd_avg, label="pd")
+    ax.fill_between(freqs, avg + std, avg - std, color="C0", alpha=0.3)
+    ax.fill_between(freqs, pd_avg + pd_std, pd_avg - pd_std, color="C1", alpha=0.3)
+    ax.set_xlim(1, 55)
     ax.set_xlabel("Freq [Hz]")
-    ax.set_ylabel("Power / freq [dB]")
+    ax.set_ylabel("μV^2 / Hz [dB]")
+    ax.set_title(f"{channel}")
+    ax.legend(loc="upper right")
 
 
 def main() -> int:
@@ -138,65 +138,22 @@ def main() -> int:
     parser.add_argument("data_dir")
     args = parser.parse_args()
     patients = load_data(args.data_dir)
-    df, psds = get_psds(patients)
-    psds: list[mne.time_frequency.Spectrum] = psds
 
-    _, freqs = psds[0].get_data(["P7"], return_freqs=True)
-    f, ax = plt.subplots()
-    p7 = df["P7"]
-    avg_p7_db = p7["avg"]
-    min_p7_db = p7["min"]
-    max_p7_db = p7["max"]
-    # avg_p7_db = 10 * np.log10(p7["avg"])
-    # min_p7_db = 10 * np.log10(p7["min"])
-    # max_p7_db = 10 * np.log10(p7["max"])
-    # min_p7_db = max_p7_db + avg_p7_db
-    ax.plot(freqs, avg_p7_db)
-    ax.fill_between(freqs, min_p7_db, max_p7_db, color="C0", alpha=0.5)
-    ax.set_xscale("symlog")
-    ax.set_xlim(1, 55)
-    ax.set_xticks([2, 4, 7, 13, 25, 50])
+    df = calculate_psd_metrics(patients)
+
+    f, ax = plt.subplots(3, 3)
+    index = 0
+    for i in range(3):
+        for j in range(3):
+            if index == len(ELECTRODES):
+                break
+            plot_psd_metrics(
+                df,
+                ELECTRODES[index],
+                ax[i, j],
+            )
+            index += 1
     plt.show()
-
-    # print(avgs["P8"])
-    # fig, ax = plt.subplots(1, 2)  # , sharex=True, sharey=True)
-    # # plt.psd()
-    # data, _times = patients[0].raw.get_data(["P7"], return_times=True)
-
-    # plot_psd(data[0], ax[0])
-    # plt.show()
-
-    # f, Pxx_spec = signal.welch(
-    #     data[0],
-    #     FS,
-    #     "flattop",
-    #     512 * 4,
-    #     scaling="spectrum",
-    # )
-    # Pxx_spec = 10 * np.log10(Pxx_spec)
-    # plt.figure()
-    # plt.semilogy(f, np.sqrt(Pxx_spec))
-    # plt.xlim(2, 50)
-    # plt.xlabel("frequency [Hz]")
-    # plt.ylabel("Linear spectrum [V RMS]")
-    # plt.title("Power spectrum")
-    # plt.show()
-
-    # ax[0].psd(data[0], Fs=FS)
-    # plt.xlim(2, 50)
-    # ax[0].plot(f, Pxx_spec)
-    # ax[0].set_xticks(np.arange(0, 60, 10))
-    # psds[0].plot(axes=ax[1])
-    # plt.show()
-    # psd = patients[0].raw.compute_psd(method="welch")
-    # psd = patients[0].raw.compute_psd(method="multitaper")
-    # p8 = psd.get_data(["P8", "P7"])
-    # print(type(p8[0][0]))
-    # print(p8)
-    # psd.plot()
-    # plt.show()
-    # run(args.data_dir)
-
     return 0
 
 
