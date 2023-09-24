@@ -2,15 +2,20 @@ import sys
 from argparse import ArgumentParser
 from typing import Optional
 
+import librosa
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import mne
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
+import scipy
 from mne_bids import (
     BIDSPath,
     find_matching_paths,
     read_raw_bids,
 )
+from scipy import signal
 
 ELECTRODES = [
     "P8",
@@ -82,7 +87,7 @@ def load_data(data_dir: str) -> list[Patient]:
     df["BIDSPath"] = raw_paths
     df["CHPATH"] = chs
 
-    # df = df.loc[[0, 20, 110, 111, 112]]  # TODO: Remove
+    # df = df.loc[[0, 20, 110, 111, 148]]  # TODO: Remove
     patients = [Patient(row) for _, row in df.iterrows()]
     return patients
 
@@ -123,13 +128,100 @@ def plot_psd_metrics(metrics: pd.DataFrame, channel: str, ax: Optional[plt.Axes]
 
     ax.plot(freqs, avg, label="control")
     ax.plot(freqs, pd_avg, label="pd")
+    # ax.plot(freqs, pd_avg, label="ci")
     ax.fill_between(freqs, avg + std, avg - std, color="C0", alpha=0.3)
     ax.fill_between(freqs, pd_avg + pd_std, pd_avg - pd_std, color="C1", alpha=0.3)
-    ax.set_xlim(1, 55)
+    ax.set_xlim(1, 50)
     ax.set_xlabel("Freq [Hz]")
+    ax.set_xscale("log")
+    ax.set_xticks([2, 3, 5, 9, 15, 30])
+    ax.get_xaxis().set_major_formatter(mpl.ticker.ScalarFormatter())
     ax.set_ylabel("μV^2 / Hz [dB]")
     ax.set_title(f"{channel}")
     ax.legend(loc="upper right")
+
+
+def save_psd_metric_plots(metrics: pd.DataFrame) -> None:
+    for electrode in ELECTRODES:
+        f, ax = plt.subplots()
+        plot_psd_metrics(
+            metrics,
+            electrode,
+            ax,
+        )
+        plt.savefig(f"result/psd_{electrode}.svg")
+
+
+def plot_all_psd(metrics: pd.DataFrame) -> None:
+    f, ax = plt.subplots(3, 3)
+    index = 0
+    for i in range(3):
+        for j in range(3):
+            if index == len(ELECTRODES):
+                break
+            plot_psd_metrics(
+                metrics,
+                ELECTRODES[index],
+                ax[i, j],
+            )
+            index += 1
+    plt.show()
+
+
+def plot_and_save(y: npt.NDArray, file: str, x: Optional[npt.NDArray] = None, ax: Optional[plt.Axes] = None) -> None:
+    if ax is None:
+        _, ax = plt.subplots()
+    if x is None:
+        x = np.linspace(0, 1, len(y))
+    ax.plot(x, y)
+    plt.savefig(file)
+
+
+def normalize_energy(raw: mne.io.Raw) -> npt.NDArray[np.float32]:
+    data = raw.get_data()
+    for i in range(len(data)):
+        data[i] = 2 * (data[i] - np.min(data[i])) / np.ptp(data[i]) - 1
+    return data
+
+
+def band_pass(
+    data: npt.NDArray[np.float32], lowcut: float = 2.5, highcut: float = 14, order: int = 6
+) -> npt.NDArray[np.float32]:
+    """Butterworth zero-phase"""
+    sos = signal.butter(
+        order,
+        [lowcut, highcut],
+        btype="band",
+        fs=FS,
+        output="sos",
+    )
+    return signal.sosfiltfilt(sos, data)  # y[0 : 500 * 10])
+
+
+def inspect_patient(patients: list[Patient]) -> None:
+    """Inspect 2 second of a channel"""
+    f, ax = plt.subplots(3, 1, sharex=True, layout="constrained")
+    for patient in patients:
+        raw = patient.raw
+        y, x = raw.get_data(["P8"], 0, 5000, return_times=True)
+        y = y[0]
+        # Normalize
+        y_norm = 2 * (y - np.min(y)) / np.ptp(y) - 1
+        # Bandpass filter
+        y_filtered = band_pass(y_norm)
+        ax[0].plot(x, y, label=f"{patient.group}")
+        ax[0].set_title("Raw signal [P8]")
+        ax[0].set_ylabel("µV")
+        ax[1].plot(x, y_norm)
+        ax[1].set_title("Normalized signal [P8]")
+        ax[2].plot(x, y_filtered)
+        ax[2].set_title("Filtered signal [P8]")
+        ax[2].set_xlabel("Time (s)")
+    f.legend()
+    plt.savefig("result/data_processing.svg")
+
+    # Inspect raw signal
+    pass
 
 
 def main() -> int:
@@ -139,21 +231,74 @@ def main() -> int:
     args = parser.parse_args()
     patients = load_data(args.data_dir)
 
-    df = calculate_psd_metrics(patients)
+    # df = calculate_psd_metrics(patients)
+    # plot_all_psd(df)
+    # save_psd_metric_plots(df)
 
-    f, ax = plt.subplots(3, 3)
-    index = 0
-    for i in range(3):
-        for j in range(3):
-            if index == len(ELECTRODES):
-                break
-            plot_psd_metrics(
-                df,
-                ELECTRODES[index],
-                ax[i, j],
-            )
-            index += 1
+    # inspect_patient([patients[0], patients[-1]])
+
+    y = patients[0].raw.get_data(picks=["P8"])
+    y = y[0]  # [0:1000]
+    y_n = normalize_energy(patients[0].raw)
+    y_n = y_n[0]  # [0:1000]
+    y_bp = band_pass(y_n)
+    # plot_and_save(y[0][0:1000], "tmp.svg")
+    # y = patients[0].raw.get_data(["P8"])[0]
+    # Normalize
+    # y = 2 * (y - np.min(y)) / np.ptp(y) - 1
+    # Filter with a zero-phase butterworth 6th order filter
+    # b, a = signal.butter(8, 0.5)
+
+    order = 4
+    lpc = librosa.lpc(y_bp, order=order)
+    print(lpc)
+    (f, y_psd) = signal.welch(y, FS, nperseg=1028 * 10, scaling="density")
+    y_psd_db = 10 * np.log10(y_psd)
+
+    (f, y_bp_psd) = signal.welch(y_bp, FS, nperseg=1028 * 10, scaling="density")
+    y_bp_psd_db = 10 * np.log10(y_bp_psd)
+    lpc = librosa.lpc(y_bp_psd, order=order)
+
+    lpc = np.hstack([[0], -1 * lpc[1:]])
+    y_hat = scipy.signal.lfilter(lpc, [1], y_bp_psd)
+    # y_hat = scipy.signal.lfilter(lpc, [1], y_bp)
+
+    # (f, y_hat_psd) = signal.welch(y_hat, FS, nperseg=1028, scaling="density")
+    # y_hat_psd_db = 10 * np.log10(y_hat_psd)
+
+    # (f, lpc_psd) = signal.welch(
+    #     y_hat, FS, nperseg=4096, scaling="density"
+    # )  # , FS, nperseg=4096 * 8, scaling="density")
+    # lpc_psd_db = 10 * np.log10(lpc_psd)
+
+    # _, ax = plt.subplots(2)
+    # ax[0].plot(y_n)
+    # ax[0].plot(y_hat)
+    # plt.show()
+
+    # exit()
+
+    # sys.exit()
+    # b = np.hstack([[0], -1 * a[1:]])
+    # x_hat = scipy.signal.lfilter(b, [1], x)
+    # a_psd = signal.psd
+    _, ax = plt.subplots(3)
+    ax[0].plot(f, y_psd_db)
+    ax[0].set_xlim(1, 15)
+    ax[0].set_ylim(-130, -100)
+
+    ax[1].plot(f, y_bp_psd_db)
+    ax[1].set_xlim(1, 15)
+    ax[1].set_ylim(-70, 30)
+
+    # ax[2].plot(y_bp[0][:500])
+    # ax[2].plot(y_hat[:500])
+    ax[2].plot(f, y_hat)
+    ax[2].set_xlim(1, 15)
+    ax[2].set_ylim(-60, 0)
+
     plt.show()
+
     return 0
 
 
