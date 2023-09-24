@@ -4,6 +4,8 @@ from librosa import lpc
 
 
 class LeapdModel:
+    """Implementation of model based on the Linear-predictive-coding EEG Algortihm for PD (LEAPD)"""
+
     def __init__(
         self,
         y1: npt.NDArray[np.float32],
